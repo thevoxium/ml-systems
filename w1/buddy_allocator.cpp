@@ -26,17 +26,31 @@ typedef struct Allocator {
   size_t min_order_;
   size_t max_order_;
   Chunk **free_chunk_list_;
-
   void add_chunk(Chunk *chunk_ptr);
   bool find_chunk(Chunk *chunk_ptr);
   void remove_chunk(Chunk *chunk_ptr);
-  void free_chunk(Chunk *chunk_ptr);
-
-  Chunk *get_memory(size_t size);
-
+  void free_chunk(void *data_ptr);
+  void *get_memory(size_t size);
   Allocator(size_t max_memory, size_t min_order, size_t max_order)
       : base_addr_(NULL), min_order_(min_order), max_order_(max_order),
         free_chunk_list_(NULL) {
+    size_t min_size = sizeof(Chunk);
+    size_t min_order_required = 0;
+    while ((1ULL << min_order_required) < min_size) {
+      min_order_required++;
+    }
+    if (min_order_ < min_order_required) {
+      min_order_ = min_order_required;
+    }
+    size_t max_size = next_power_of_two(max_memory);
+    size_t max_order_possible = 0;
+    while ((1ULL << max_order_possible) < max_size) {
+      max_order_possible++;
+    }
+    if (max_order_ > max_order_possible) {
+      max_order_ = max_order_possible;
+    }
+
     max_memory_ = next_power_of_two(max_memory);
     size_t list_size = max_order_ - min_order_ + 1;
     free_chunk_list_ = (Chunk **)malloc(list_size * sizeof(Chunk *));
@@ -47,7 +61,6 @@ typedef struct Allocator {
     for (size_t i = 0; i < list_size; i++) {
       free_chunk_list_[i] = NULL;
     }
-
     base_addr_ = mmap(NULL, max_memory_, PROT_READ | PROT_WRITE,
                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (base_addr_ == MAP_FAILED) {
@@ -55,27 +68,19 @@ typedef struct Allocator {
       base_addr_ = NULL;
       return;
     }
-
     Chunk *full_block = (Chunk *)base_addr_;
-    if (full_block == NULL) {
-      perror("Error allocating initial chunk");
-      return;
-    }
     full_block->next_ = NULL;
     full_block->order_ = max_order_;
     add_chunk(full_block);
   }
-
   ~Allocator() {
     free(free_chunk_list_);
     free_chunk_list_ = NULL;
-
     if (base_addr_ && base_addr_ != MAP_FAILED) {
       munmap(base_addr_, max_memory_);
     }
     base_addr_ = NULL;
   }
-
 } Allocator;
 
 void Allocator::add_chunk(Chunk *chunk_ptr) {
@@ -132,48 +137,56 @@ void Allocator::remove_chunk(Chunk *chunk_ptr) {
   }
 }
 
-Chunk *Allocator::get_memory(size_t size) {
-  size_t required_size = next_power_of_two(size);
+void *Allocator::get_memory(size_t size) {
+  size_t required_size = next_power_of_two(size + sizeof(Chunk));
   if (required_size > (1ULL << max_order_) ||
       required_size < (1ULL << min_order_)) {
     perror("Size required is not in block range");
     return NULL;
   }
-
   size_t target_order = std::log2(required_size);
   for (size_t i = target_order; i <= max_order_; i++) {
     size_t index = i - min_order_;
     if (free_chunk_list_[index] == NULL) {
       continue;
     }
-
     Chunk *block = free_chunk_list_[index];
     remove_chunk(block);
-
     Chunk *curr = block;
     size_t curr_order = i;
-
     while (curr_order > target_order) {
       curr_order--;
       size_t half_size = (1ULL << curr_order);
-
-      char *base = (char *)(curr);
-      Chunk *buddy = (Chunk *)(base + half_size);
-
+      Chunk *buddy = (Chunk *)((char *)curr + half_size);
       buddy->order_ = curr_order;
       buddy->next_ = NULL;
-
       curr->order_ = curr_order;
       add_chunk(buddy);
     }
-    return curr;
+    return (void *)((char *)curr + sizeof(Chunk));
   }
   return NULL;
 }
 
-void Allocator::free_chunk(Chunk *chunk_ptr) {
-  if (chunk_ptr == NULL) {
+void Allocator::free_chunk(void *data_ptr) {
+  if (data_ptr == NULL) {
     return;
+  }
+  Chunk *chunk_ptr = (Chunk *)((char *)data_ptr - sizeof(Chunk));
+  size_t order = chunk_ptr->order_;
+  while (order < max_order_) {
+    Chunk *buddy =
+        (Chunk *)((char *)base_addr_ +
+                  (((char *)chunk_ptr - (char *)base_addr_) ^ (1ULL << order)));
+    if (find_chunk(buddy) == false || buddy->order_ != chunk_ptr->order_) {
+      break;
+    }
+    remove_chunk(buddy);
+    if (buddy < chunk_ptr) {
+      chunk_ptr = buddy;
+    }
+    order++;
+    chunk_ptr->order_ = order;
   }
   add_chunk(chunk_ptr);
 }
@@ -181,7 +194,7 @@ void Allocator::free_chunk(Chunk *chunk_ptr) {
 int main() {
   size_t max_memory = 1 << 20, min_order = 1, max_order = 20;
   Allocator alloc(max_memory, min_order, max_order);
-  Chunk *block = alloc.get_memory(5);
+  void *block = alloc.get_memory(5);
   if (block) {
     printf("Found Block");
     alloc.free_chunk(block);
