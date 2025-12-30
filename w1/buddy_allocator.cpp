@@ -1,7 +1,7 @@
-#include <cmath>
-#include <cstddef>
-#include <cstdio>
-#include <cstdlib>
+#include <math.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <sys/mman.h>
 
 size_t next_power_of_two(size_t size) {
@@ -41,7 +41,7 @@ typedef struct Allocator {
     size_t list_size = max_order_ - min_order_ + 1;
     free_chunk_list_ = (Chunk **)malloc(list_size * sizeof(Chunk *));
     if (free_chunk_list_ == NULL) {
-      std::perror("Error allocating free_chunk_list");
+      perror("Error allocating free_chunk_list");
       return;
     }
     for (size_t i = 0; i < list_size; i++) {
@@ -51,14 +51,14 @@ typedef struct Allocator {
     base_addr_ = mmap(NULL, max_memory_, PROT_READ | PROT_WRITE,
                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (base_addr_ == MAP_FAILED) {
-      std::perror("Error using mmap");
+      perror("Error using mmap");
       base_addr_ = NULL;
       return;
     }
 
-    Chunk *full_block = (Chunk *)malloc(sizeof(Chunk));
+    Chunk *full_block = (Chunk *)base_addr_;
     if (full_block == NULL) {
-      std::perror("Error allocating initial chunk");
+      perror("Error allocating initial chunk");
       return;
     }
     full_block->next_ = NULL;
@@ -67,18 +67,10 @@ typedef struct Allocator {
   }
 
   ~Allocator() {
-    for (size_t i = 0; i < max_order_ - min_order_ + 1; ++i) {
-      Chunk *curr = free_chunk_list_[i];
-      while (curr) {
-        Chunk *next = curr->next_;
-        free(curr);
-        curr = next;
-      }
-    }
     free(free_chunk_list_);
     free_chunk_list_ = NULL;
 
-    if (base_addr_ != NULL && base_addr_ != MAP_FAILED) {
+    if (base_addr_ && base_addr_ != MAP_FAILED) {
       munmap(base_addr_, max_memory_);
     }
     base_addr_ = NULL;
@@ -144,22 +136,37 @@ Chunk *Allocator::get_memory(size_t size) {
   size_t required_size = next_power_of_two(size);
   if (required_size > (1ULL << max_order_) ||
       required_size < (1ULL << min_order_)) {
-    std::perror("Size required is not in block range");
+    perror("Size required is not in block range");
     return NULL;
   }
 
   size_t target_order = std::log2(required_size);
   for (size_t i = target_order; i <= max_order_; i++) {
     size_t index = i - min_order_;
-    if (free_chunk_list_[index]) {
-      if (i == target_order) {
-        Chunk *result = free_chunk_list_[index];
-        remove_chunk(free_chunk_list_[index]);
-        return result;
-      } else {
-        // todo: implement block spliting
-      }
+    if (free_chunk_list_[index] == NULL) {
+      continue;
     }
+
+    Chunk *block = free_chunk_list_[index];
+    remove_chunk(block);
+
+    Chunk *curr = block;
+    size_t curr_order = i;
+
+    while (curr_order > target_order) {
+      curr_order--;
+      size_t half_size = (1ULL << curr_order);
+
+      char *base = (char *)(curr);
+      Chunk *buddy = (Chunk *)(base + half_size);
+
+      buddy->order_ = curr_order;
+      buddy->next_ = NULL;
+
+      curr->order_ = curr_order;
+      add_chunk(buddy);
+    }
+    return curr;
   }
   return NULL;
 }
