@@ -194,7 +194,7 @@ void Allocator::free_chunk(void *data_ptr) {
 int main() {
   size_t max_memory = 1 << 20, min_order = 1, max_order = 20;
   Allocator alloc(max_memory, min_order, max_order);
-  void *block = alloc.get_memory(5);
+  void *block = alloc.get_memory(50);
   if (block) {
     printf("Found Block");
     alloc.free_chunk(block);
